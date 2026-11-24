@@ -36,10 +36,10 @@ class ControlPanel(QWidget):
             Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint | Qt.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.setFixedSize(812, 128)
+        self.setFixedSize(theme.PANEL_W, theme.PANEL_H)
 
         path = QPainterPath()
-        path.addRoundedRect(QRectF(0, 0, 812, 128), 14, 14)
+        path.addRoundedRect(QRectF(0, 0, theme.PANEL_W, theme.PANEL_H), 14, 14)
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
         outer = QVBoxLayout(self)
@@ -109,6 +109,8 @@ class ControlPanel(QWidget):
         self.cb_size.setCursor(Qt.PointingHandCursor)
         for label, _w, _h in theme.SIZES:
             self.cb_size.addItem(label)
+        self.cb_size.addItem("自定义")
+        self._size_custom_index = self.cb_size.count() - 1
         row1.addWidget(self.cb_size)
 
         row1.addWidget(QLabel("字体"))
@@ -118,6 +120,22 @@ class ControlPanel(QWidget):
         for key in theme.FONTS.keys():
             self.cb_font.addItem(key)
         row1.addWidget(self.cb_font)
+
+        row1.addWidget(QLabel("字号"))
+        self.cb_fontsize = QComboBox()
+        self.cb_fontsize.setFixedWidth(58)
+        self.cb_fontsize.setCursor(Qt.PointingHandCursor)
+        self.cb_fontsize.setToolTip("只调选中这一张便签的正文大小")
+        for size in theme.FONT_SIZES:
+            self.cb_fontsize.addItem(str(size))
+        row1.addWidget(self.cb_fontsize)
+
+        row1.addWidget(QLabel("字色"))
+        self.btn_textcolor = QPushButton("A")
+        self.btn_textcolor.setFixedSize(30, 22)
+        self.btn_textcolor.setCursor(Qt.PointingHandCursor)
+        self.btn_textcolor.setToolTip("只调选中这一张便签的正文颜色")
+        row1.addWidget(self.btn_textcolor)
 
         row1.addWidget(QLabel("透明度"))
         self.cb_opacity = QComboBox()
@@ -165,8 +183,25 @@ class ControlPanel(QWidget):
         self.btn_reset.setCursor(Qt.PointingHandCursor)
         row2.addWidget(self.btn_reset)
 
+        row2.addWidget(self._sep())
+        row2.addWidget(QLabel("标题字号"))
+        self.cb_titlesize = QComboBox()
+        self.cb_titlesize.setFixedWidth(52)
+        self.cb_titlesize.setCursor(Qt.PointingHandCursor)
+        self.cb_titlesize.setToolTip("只调选中便签的标题字号；胶带条高度会自动跟着变")
+        for size in theme.TITLE_FONT_SIZES:
+            self.cb_titlesize.addItem(str(size))
+        row2.addWidget(self.cb_titlesize)
+
+        row2.addWidget(QLabel("标题色"))
+        self.btn_titlecolor = QPushButton("A")
+        self.btn_titlecolor.setFixedSize(30, 22)
+        self.btn_titlecolor.setCursor(Qt.PointingHandCursor)
+        self.btn_titlecolor.setToolTip("只调选中便签的标题文字颜色")
+        row2.addWidget(self.btn_titlecolor)
+
         row2.addStretch(1)
-        hint = QLabel("拖动标题条移动 · 双击正文编辑 · 右下角缩放 · 右键更多")
+        hint = QLabel("双击标题改标题 · 双击正文编辑 · 右键更多")
         hint.setObjectName("hint")
         row2.addWidget(hint)
         body.addLayout(row2)
@@ -177,6 +212,10 @@ class ControlPanel(QWidget):
         self.btn_tape.clicked.connect(self.pick_tape)
         self.cb_size.currentIndexChanged.connect(self.size_changed)
         self.cb_font.currentTextChanged.connect(self.font_changed)
+        self.cb_fontsize.currentIndexChanged.connect(self.font_size_changed)
+        self.btn_textcolor.clicked.connect(self.pick_text_color)
+        self.cb_titlesize.currentIndexChanged.connect(self.title_size_changed)
+        self.btn_titlecolor.clicked.connect(self.pick_title_color)
         self.cb_opacity.currentIndexChanged.connect(self.opacity_changed)
         self.btn_sound.clicked.connect(self.toggle_sound)
         self.btn_pin.clicked.connect(lambda: self.set_layer(True))
@@ -230,8 +269,47 @@ class ControlPanel(QWidget):
             note.apply_tape(color.name())
             self.sync(note)
 
+    def pick_text_color(self):
+        note = self._current()
+        if not note:
+            return
+        selected = note.body.has_selection()
+        start = note.body.selection_color(note.font_color) if selected else note.font_color
+        color = QColorDialog.getColor(QColor(start), self, "选择字体颜色")
+        if color.isValid():
+            selection_only = note.apply_font_color(color.name())
+            if selection_only:
+                # 选区改了颜色，但整张便签的默认字色没变，不要把按钮同步回去
+                self._style_color_button(self.btn_textcolor, color.name())
+            else:
+                self.sync(note)
+
+    def pick_title_color(self):
+        note = self._current()
+        if not note:
+            return
+        color = QColorDialog.getColor(
+            QColor(note.title_color), self, "选择标题文字颜色"
+        )
+        if color.isValid():
+            note.apply_title_color(color.name())
+            self.sync(note)
+
+    @staticmethod
+    def _style_color_button(button, color):
+        c = QColor(color)
+        if not c.isValid():
+            c = QColor(theme.TEXT_DEFAULT)
+        text_color = "#FFFFFF" if c.lightness() < 140 else "#3A2C1E"
+        button.setStyleSheet(
+            "QPushButton{background:%s;border:1px solid rgba(255,255,255,89);"
+            "border-radius:5px;padding:0;color:%s;font-family:'Microsoft YaHei';"
+            "font-size:12px;font-weight:600;}"
+            % (c.name(), text_color)
+        )
+
     def size_changed(self, index):
-        if self._sync or index < 0:
+        if self._sync or index < 0 or index >= len(theme.SIZES):
             return
         note = self._current()
         if not note:
@@ -245,6 +323,21 @@ class ControlPanel(QWidget):
         note = self._current()
         if note:
             note.apply_font(key)
+
+    def font_size_changed(self, index):
+        if self._sync or index < 0:
+            return
+        note = self._current()
+        if note:
+            note.apply_font_size(theme.FONT_SIZES[index])
+
+    def title_size_changed(self, index):
+        if self._sync or index < 0:
+            return
+        note = self._current()
+        if note:
+            note.apply_title_font_size(theme.TITLE_FONT_SIZES[index])
+            self.sync(note)
 
     def opacity_changed(self, index):
         if self._sync or index < 0:
@@ -297,7 +390,9 @@ class ControlPanel(QWidget):
         self._sync = True
         has = note is not None
         for widget in (self.btn_paper, self.btn_tape, self.cb_size, self.cb_font,
-                       self.cb_opacity, self.btn_pin, self.btn_desktop, self.btn_fold):
+                       self.cb_fontsize, self.btn_textcolor, self.cb_titlesize,
+                       self.btn_titlecolor, self.cb_opacity,
+                       self.btn_pin, self.btn_desktop, self.btn_fold):
             widget.setEnabled(has)
 
         if has:
@@ -321,8 +416,22 @@ class ControlPanel(QWidget):
                 if abs(card_w - w) <= 8 and abs(card_h - h) <= 8:
                     index = i
                     break
-            self.cb_size.setCurrentIndex(index)
+            self.cb_size.setCurrentIndex(index if index >= 0 else self._size_custom_index)
             self.cb_font.setCurrentText(note.font_key)
+
+            size_index = min(
+                range(len(theme.FONT_SIZES)),
+                key=lambda i: abs(theme.FONT_SIZES[i] - note.font_size),
+            )
+            self.cb_fontsize.setCurrentIndex(size_index)
+            self._style_color_button(self.btn_textcolor, note.font_color)
+
+            title_index = min(
+                range(len(theme.TITLE_FONT_SIZES)),
+                key=lambda i: abs(theme.TITLE_FONT_SIZES[i] - note.title_font_size),
+            )
+            self.cb_titlesize.setCurrentIndex(title_index)
+            self._style_color_button(self.btn_titlecolor, note.title_color)
 
             self.btn_pin.setChecked(note.pinned)
             self.btn_desktop.setChecked(not note.pinned)
@@ -341,5 +450,9 @@ class ControlPanel(QWidget):
             self.btn_pin.setChecked(False)
             self.btn_desktop.setChecked(False)
             self.cb_opacity.setCurrentIndex(0)
+            self.cb_fontsize.setCurrentIndex(-1)
+            self.cb_titlesize.setCurrentIndex(-1)
+            self._style_color_button(self.btn_textcolor, theme.TEXT_DEFAULT)
+            self._style_color_button(self.btn_titlecolor, theme.TITLE_COLOR_DEFAULT)
 
         self._sync = False

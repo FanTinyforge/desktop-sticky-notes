@@ -6,7 +6,7 @@ Set-Location $root
 & "$root\build.ps1"
 if ($LASTEXITCODE -ne 0) { throw "构建失败" }
 
-$name = "桌面便利贴-1.1.1-win64"
+$name = "桌面便利贴-1.1.3-win64"
 $stage = "$root\release\$name"
 $zip = "$root\release\$name.zip"
 
@@ -22,7 +22,7 @@ Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optima
 $exeHash = (Get-FileHash -LiteralPath "$root\dist\桌面便利贴.exe" -Algorithm SHA256).Hash
 $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
 @(
-    "桌面便利贴 1.1.1 (win64)",
+    "桌面便利贴 1.1.3 (win64)",
     "exe SHA256: $exeHash",
     "zip SHA256: $zipHash"
 ) | Set-Content -LiteralPath "$root\release\SHA256SUMS.txt" -Encoding UTF8

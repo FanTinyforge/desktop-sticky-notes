@@ -8,7 +8,7 @@ A lightweight Windows sticky-note app built with PySide6. Cream-colored paper, a
 
 ## 下载 / Download
 
-去 [Releases](../../releases/latest) 下载 `desktop-sticky-notes-1.1.1-win64.zip`，解压后双击 `桌面便利贴.exe`，免安装。
+去 [Releases](../../releases/latest) 下载 `desktop-sticky-notes-1.1.3-win64.zip`，解压后双击 `桌面便利贴.exe`，免安装。
 
 - 仅支持 **Windows 10 1809+ / Windows 11，x64**
 - 未做代码签名，首次运行 Windows SmartScreen 会提示：点「更多信息 → 仍要运行」
@@ -21,6 +21,9 @@ A lightweight Windows sticky-note app built with PySide6. Cream-colored paper, a
 - **单张透明度**：30%–100%，只作用于选中的那一张
 - **自由缩放**：拖右下角斜线改大小；小 / 中 / 大三档预设
 - **配色与字体**：纸色、胶带色可取色器任选；楷体 / 宋体 / 黑体
+- **标题可单独排版**：标题字号 10–28、标题颜色独立设置，胶带标题条高度随字号自动缩放
+- **正文局部格式**：选中文字后改字号 / 字色只作用于选区，同一张便签可以混排大小和颜色；没有选区时才改整张便签默认样式
+- **默认开机自启**：打包版首次运行自动写入当前用户启动项，托盘可随时关闭，不需要管理员权限
 - **音效可换**：拖动是轻纸面摩擦 + 短「嗒」，落纸是低频闷响；支持换成自己的 wav，可随时恢复默认
 - **自动存档**：0.7 秒防抖，删除 / 拖动结束立即写盘；写 `.tmp` → fsync → 备份 → 原子替换
 - **坏档不静默清空**：主文件读不出来回退 `.bak`；两份都坏则保留 `.corrupt` 并在托盘提示
@@ -32,6 +35,9 @@ A lightweight Windows sticky-note app built with PySide6. Cream-colored paper, a
 | 操作 | 效果 |
 | --- | --- |
 | 拖动标题条 | 移动便签，起手 / 松手各有音效，拖动中投影变大 |
+| 双击标题文字 | 修改标题，默认「待办事项」；回车或点别处保存，Esc 取消，也可以右键修改 |
+| 选中正文文字后改字号 / 字色 | 只改选中的字，不污染整张便签默认样式 |
+| 控制条「标题字号 / 标题色」 | 只改选中便签的标题文字，胶带条高度自动跟着字号缩放 |
 | 鼠标移到便签上 | 标题条右侧浮出 `钉` / `▲` / `✕` |
 | 点 `钉` | 置顶；再点回桌面层 |
 | 点 `▲` | 折叠成只剩标题条，箭头变 `▼` |
@@ -41,7 +47,7 @@ A lightweight Windows sticky-note app built with PySide6. Cream-colored paper, a
 | 点 `✕` | 便签底部弹确认条，再点「删除」 |
 | 单击便签 | 选中，控制条上的颜色 / 字体 / 尺寸 / 透明度作用于它 |
 
-启动后桌面底部中间有一条控制条，托盘区有便签图标。托盘右键可新建、全部置顶 / 全部贴桌面、音效、隐藏、退出。
+启动后桌面底部中间有一条控制条，托盘区有便签图标。托盘右键可新建、全部置顶 / 全部贴桌面、音效、开机自启、隐藏、退出。
 
 ## 音效自定义
 
@@ -75,11 +81,19 @@ python -m venv .venv
 .venv\Scripts\python main.py
 ```
 
+源码模式不会写开机启动项，避免调试时污染系统；设置环境变量 `STICKY_NO_AUTOSTART=1` 也可以强制禁用。
+
+## 开机自启
+
+打包版默认开启：首次运行写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\StickyNotesTool`，指向当前 exe 路径，不需要管理员权限。托盘右键可取消勾选「开机自启」；再勾上会重新写入当前路径。移动 exe 后下次启动会自动更新路径。
+
+如果之前手动把快捷方式放进 `shell:startup`，请先删掉，避免和注册表启动项重复。
+
 ## 自己打包
 
 ```powershell
 powershell -File build.ps1      # 生成 dist\桌面便利贴.exe
-powershell -File package.ps1    # 生成 release\桌面便利贴-1.1.1-win64.zip
+powershell -File package.ps1    # 生成 release\桌面便利贴-1.1.3-win64.zip
 ```
 
 `build.ps1` 使用仓库内的 `.venv`，调用 PyInstaller 按 `桌面便利贴.spec` 打单文件；spec 里已排除 QtQml / QtQuick / QtSql / QtPdf / WebEngine / tkinter，关闭 UPX，并带 `version_info.txt` 版本资源。
@@ -102,7 +116,7 @@ make_icon.py  生成 app_icon.png
 - 安装包未签名，SmartScreen 会提示；没有自动更新
 - PyInstaller onefile 运行时会有一个引导进程 + 主进程，属正常现象；退出请走托盘，强杀会留下子进程
 - 便签明文存储，不提供加密；换机请手动备份 `notes.json`
-- 没有富文本、图片、提醒、云同步，定位就是轻量桌面纸片
+- 正文支持局部字号 / 颜色，但不支持图片、提醒、云同步，定位就是轻量桌面纸片
 
 ## License
 

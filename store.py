@@ -84,6 +84,17 @@ def _normalize(item):
     if font not in theme.FONTS:
         font = "楷体"
 
+    title = item.get("title", theme.TITLE_DEFAULT)
+    if not isinstance(title, str):
+        title = theme.TITLE_DEFAULT
+    title = title.strip().replace("\r", " ").replace("\n", " ")[: theme.TITLE_MAX]
+    if not title and "title" not in item:
+        title = theme.TITLE_DEFAULT
+
+    text_html = item.get("text_html", "")
+    if not isinstance(text_html, str):
+        text_html = ""
+
     return dict(
         x=_num(item, "x", 200, -20000, 20000),
         y=_num(item, "y", 120, -20000, 20000),
@@ -92,10 +103,18 @@ def _normalize(item):
         paper=_color(item.get("paper"), theme.PAPER_DEFAULT),
         tape=_color(item.get("tape"), theme.TAPE_DEFAULT),
         font=font,
+        font_size=_num(item, "font_size", theme.FONT_SIZE, 10, 36),
+        font_color=_color(item.get("font_color"), theme.TEXT_DEFAULT),
+        title=title,
+        title_font_size=_num(
+            item, "title_font_size", theme.TITLE_FONT_SIZE, 10, 28
+        ),
+        title_color=_color(item.get("title_color"), theme.TITLE_COLOR_DEFAULT),
         pinned=_tobool(item.get("pinned", False)),
         collapsed=_tobool(item.get("collapsed", False)),
         opacity=_opacity(item.get("opacity", 1.0)),
         text=text,
+        text_html=text_html,
     )
 
 

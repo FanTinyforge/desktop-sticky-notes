@@ -3,6 +3,7 @@
 import ctypes
 import logging
 import os
+import re
 from ctypes import wintypes
 
 from PySide6.QtCore import (
@@ -20,17 +21,20 @@ from PySide6.QtGui import (
     QActionGroup,
     QColor,
     QFont,
+    QFontMetrics,
     QGuiApplication,
     QPainter,
     QPainterPath,
     QPalette,
     QPen,
+    QTextCharFormat,
 )
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMenu,
     QPushButton,
     QTextEdit,
@@ -82,6 +86,16 @@ def _as_color(value, default):
     return default
 
 
+def _as_title(value, allow_empty=False):
+    """标题只保留一行，最长 TITLE_MAX；缺省时回落到“待办事项”，但允许用户主动清空。"""
+    if not isinstance(value, str):
+        return theme.TITLE_DEFAULT
+    text = value.replace("\r", " ").replace("\n", " ").strip()[: theme.TITLE_MAX]
+    if not text and not allow_empty:
+        return theme.TITLE_DEFAULT
+    return text
+
+
 def _as_opacity(value):
     """兼容 0.3~1.0 与 30~100 两种历史格式。"""
     try:
@@ -91,6 +105,16 @@ def _as_opacity(value):
     if number > 1.0:
         number /= 100.0
     return max(0.3, min(1.0, number))
+
+
+_BODY_TAG_RE = re.compile(r"<body[^>]*>", re.I)
+
+
+def _prepare_html(html):
+    """载入存档 HTML 时去掉 body 上烘焙的默认字号，让全局字号仍然可控。"""
+    return _BODY_TAG_RE.sub(
+        '<body style="background-color:transparent;">', html, count=1
+    )
 
 
 class Grip(QWidget):
@@ -195,18 +219,67 @@ class BodyEdit(QTextEdit):
         self.note.hide_confirm()
         super().mousePressEvent(event)
 
+    def has_selection(self):
+        return self.textCursor().hasSelection()
+
+    def format_selection_size(self, size):
+        """只改选中的字，返回 False 表示当前没有选区。"""
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            return False
+        font = QFont(self.font())
+        font.setPixelSize(int(size))
+        fmt = QTextCharFormat()
+        fmt.setFont(font)
+        cursor.mergeCharFormat(fmt)
+        self.setTextCursor(cursor)
+        return True
+
+    def format_selection_color(self, color):
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            return False
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.mergeCharFormat(fmt)
+        self.setTextCursor(cursor)
+        return True
+
+    def selection_color(self, fallback):
+        if not self.has_selection():
+            return fallback
+        color = self.textCursor().charFormat().foreground().color()
+        return color.name() if color.isValid() else fallback
+
+
+class TitleEdit(QLineEdit):
+    """标题行内编辑器：回车 / 失焦保存，Esc 取消。"""
+
+    cancelled = Signal()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.cancelled.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
 
 class TitleBar(QWidget):
-    """胶带条：深一档的颜色 + 细竖纹，拖动它移动整张纸。"""
+    """胶带条：深一档的颜色 + 细竖纹；拖动它移动整张纸，双击标题文字可改标题。"""
 
     def __init__(self, note):
         super().__init__(note.card)
         self.note = note
-        self.setFixedHeight(theme.TITLE_H)
-        self.setCursor(Qt.OpenHandCursor)
         self._drag = None
         self._press = None
         self._offset = None
+        self._editing = False
+        self._font_size = note.title_font_size
+        self._font_color = note.title_color
+        self.setFixedHeight(theme.title_height(self._font_size))
+        self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip("拖动移动便签；双击标题文字修改标题")
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 6, 0)
@@ -230,6 +303,14 @@ class TitleBar(QWidget):
             self.buttons.append(b)
         self.btn_pin, self.btn_fold, self.btn_del = self.buttons
 
+        self.title_edit = TitleEdit(self)
+        self.title_edit.setMaxLength(theme.TITLE_MAX)
+        self.title_edit.setPlaceholderText(theme.TITLE_DEFAULT)
+        self._style_edit()
+        self.title_edit.hide()
+        self.title_edit.editingFinished.connect(self._commit_title)
+        self.title_edit.cancelled.connect(self._cancel_title)
+
         self.set_tools_visible(False)
         self.sync_state()
 
@@ -251,9 +332,73 @@ class TitleBar(QWidget):
         )
         self.btn_fold.setText("▼" if self.note.collapsed else "▲")
 
+    def _style_edit(self):
+        self.title_edit.setStyleSheet(
+            "QLineEdit{background:rgba(255,255,255,195);border:0;border-radius:4px;"
+            "padding:0 4px;color:%s;font-family:'Microsoft YaHei';font-size:%dpx;"
+            "selection-background-color:#D98B52;selection-color:#FFFFFF;}"
+            % (QColor(self._font_color).name(), self._font_size)
+        )
+
+    def apply_style(self, size, color):
+        """标题字号 / 颜色单独生效，返回标题条高度变化量。"""
+        old = self.height()
+        self._font_size = max(10, min(28, int(size)))
+        self._font_color = QColor(color).name()
+        self.setFixedHeight(theme.title_height(self._font_size))
+        self._style_edit()
+        self.update()
+        return self.height() - old
+
     def set_tools_visible(self, on):
         for b in self.buttons:
             b.setVisible(bool(on))
+
+    def _edit_rect(self):
+        # 给右侧三个按钮留出 84px，窄便签至少保留 42px 输入宽度
+        width = max(42, self.width() - 16 - 84)
+        return QRect(14, 3, width, self.height() - 6)
+
+    def start_title_edit(self):
+        if self._editing:
+            return
+        self._editing = True
+        self._press = None
+        self._drag = None
+        self.setCursor(Qt.OpenHandCursor)
+        self._style_edit()
+        self.title_edit.setGeometry(self._edit_rect())
+        self.title_edit.setText(self.note.title_text)
+        self.title_edit.show()
+        self.title_edit.raise_()
+        self.title_edit.setFocus(Qt.MouseFocusReason)
+        self.title_edit.selectAll()
+
+    def _commit_title(self):
+        if not self._editing:
+            return
+        self._editing = False
+        text = self.title_edit.text()
+        self.title_edit.hide()
+        self.note.set_title_text(text)
+        self.update()
+
+    def _cancel_title(self):
+        self._editing = False
+        self.title_edit.hide()
+        self.update()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton and event.position().x() < self.width() - 84:
+            self.start_title_edit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def resizeEvent(self, event):
+        if self._editing:
+            self.title_edit.setGeometry(self._edit_rect())
+        super().resizeEvent(event)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -277,6 +422,22 @@ class TitleBar(QWidget):
             p.drawLine(x, 0, x, self.height())
             x += 6
 
+        if not self._editing:
+            title_color = QColor(self._font_color)
+            title_font = QFont("Microsoft YaHei")
+            title_font.setPixelSize(self._font_size)
+            p.setFont(title_font)
+            p.setPen(title_color)
+            avail = max(0, self.width() - 16 - 84)
+            fitted = QFontMetrics(title_font).elidedText(
+                self.note.title_text, Qt.ElideRight, avail
+            )
+            p.drawText(
+                QRectF(16, 0, avail, self.height()),
+                Qt.AlignVCenter | Qt.AlignLeft,
+                fitted,
+            )
+
         cy = self.height() / 2
         if self.note.pinned:
             # 一枚深色小钉，表示这张浮在最上层
@@ -290,6 +451,10 @@ class TitleBar(QWidget):
         p.end()
 
     def mousePressEvent(self, event):
+        if self._editing:
+            self.title_edit.setFocus(Qt.MouseFocusReason)
+            event.accept()
+            return
         if event.button() == Qt.LeftButton:
             self.note.select()
             self.note.hide_confirm()
@@ -380,6 +545,15 @@ class NoteWindow(QWidget):
         self.pinned = _as_bool(data.get("pinned", False))
         self.collapsed = _as_bool(data.get("collapsed", False))
         self.opacity = _as_opacity(data.get("opacity", 1.0))
+        self.title_text = _as_title(data.get("title", theme.TITLE_DEFAULT), allow_empty=True)
+        self.title_font_size = _as_int(
+            data.get("title_font_size"), theme.TITLE_FONT_SIZE, 10, 28
+        )
+        self.title_color = _as_color(
+            data.get("title_color"), theme.TITLE_COLOR_DEFAULT
+        )
+        self.font_size = _as_int(data.get("font_size"), theme.FONT_SIZE, 10, 36)
+        self.font_color = _as_color(data.get("font_color"), theme.TEXT_DEFAULT)
         self.is_selected = False
         self._level = 0.0
         self._dragging = False
@@ -397,7 +571,10 @@ class NoteWindow(QWidget):
         self.card = Card(self)
         outer.addWidget(self.card)
         # 显式给窗口一个最小高度，否则折叠时会被布局最小高度顶住缩不下去
-        self.setMinimumSize(150 + theme.MARGIN * 2, theme.TITLE_H + theme.MARGIN * 2)
+        self.setMinimumSize(
+            150 + theme.MARGIN * 2,
+            theme.title_height(self.title_font_size) + theme.MARGIN * 2,
+        )
 
         inner = QVBoxLayout(self.card)
         inner.setContentsMargins(0, 0, 0, 0)
@@ -411,26 +588,28 @@ class NoteWindow(QWidget):
         self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.body.setStyleSheet(
-            "QTextEdit{background:transparent;border:0px;color:#33322C;}"
+            "QTextEdit{background:transparent;border:0px;}"
             "QScrollBar:vertical{background:transparent;width:6px;margin:2px;}"
             "QScrollBar::handle:vertical{background:rgba(0,0,0,46);border-radius:3px;min-height:24px;}"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;}"
             "QScrollBar::add-page,QScrollBar::sub-page{background:transparent;}"
         )
         self.body.document().setDocumentMargin(14)
-        font = QFont()
-        font.setFamilies(theme.FONTS.get(self.font_key, theme.FONTS["楷体"]))
-        font.setPixelSize(theme.FONT_SIZE)
-        self.body.document().setDefaultFont(font)
-        pal = self.body.palette()
-        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(120, 108, 92, 120))
-        pal.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
-        self.body.setPalette(pal)
+        self._apply_body_font()
+        self._apply_text_palette()
         self.body.setPlaceholderText("双击这里输入内容…")
         text = data.get("text", "")
         if not isinstance(text, str):
             text = "" if text is None else str(text)
-        self.body.setPlainText(text)
+        html = data.get("text_html", "")
+        if isinstance(html, str) and html.strip():
+            try:
+                self.body.setHtml(_prepare_html(html))
+            except Exception:
+                logging.exception("恢复正文富文本失败，退回纯文本")
+                self.body.setPlainText(text)
+        else:
+            self.body.setPlainText(text)
         self.body.textChanged.connect(self.changed.emit)
         self.body.setContextMenuPolicy(Qt.CustomContextMenu)
         self.body.customContextMenuRequested.connect(
@@ -466,7 +645,10 @@ class NoteWindow(QWidget):
         if self.collapsed:
             self.body.hide()
             self.grip.hide()
-            self.resize(w + theme.MARGIN * 2, theme.MARGIN * 2 + theme.TITLE_H)
+            self.resize(
+                w + theme.MARGIN * 2,
+                theme.MARGIN * 2 + self.title.height(),
+            )
             self.title.set_tools_visible(True)
             self.title.sync_state()
 
@@ -516,7 +698,7 @@ class NoteWindow(QWidget):
             return
         av = scr.availableGeometry()
         x = min(max(self.x(), av.left() - self.width() + 72), av.right() - 72)
-        y = min(max(self.y(), av.top()), av.bottom() - theme.MARGIN * 2 - theme.TITLE_H)
+        y = min(max(self.y(), av.top()), av.bottom() - theme.MARGIN * 2 - self.title.height())
         if (x, y) != (self.x(), self.y()):
             self.move(x, y)
 
@@ -632,7 +814,7 @@ class NoteWindow(QWidget):
             self.title.set_tools_visible(True)
             self.card.update()
             self.title.update()
-            self._animate_height(theme.MARGIN * 2 + theme.TITLE_H)
+            self._animate_height(theme.MARGIN * 2 + self.title.height())
         else:
             self.collapsed = False
             self.body.show()
@@ -673,14 +855,92 @@ class NoteWindow(QWidget):
         self.title.update()
         self.changed.emit()
 
+    def set_title_text(self, text):
+        text = _as_title(text, allow_empty=True)
+        if text == self.title_text:
+            return
+        self.title_text = text
+        self.title.update()
+        self.changed.emit()
+
+    def apply_title_font_size(self, size):
+        size = _as_int(size, theme.TITLE_FONT_SIZE, 10, 28)
+        if size == self.title_font_size:
+            return
+        self.title_font_size = size
+        delta = self.title.apply_style(size, self.title_color)
+        self.setMinimumSize(
+            150 + theme.MARGIN * 2,
+            self.title.height() + theme.MARGIN * 2,
+        )
+        if delta:
+            if self.collapsed:
+                self._expanded_h = max(
+                    120 + theme.MARGIN * 2, self._expanded_h + delta
+                )
+                self.resize(
+                    self.width(),
+                    max(self.minimumHeight(), theme.MARGIN * 2 + self.title.height()),
+                )
+            else:
+                self.resize(
+                    self.width(),
+                    max(120 + theme.MARGIN * 2, self.height() + delta),
+                )
+        self.changed.emit()
+
+    def apply_title_color(self, color):
+        parsed = QColor(color) if isinstance(color, str) else QColor()
+        if not parsed.isValid():
+            return
+        self.title_color = parsed.name()
+        self.title.apply_style(self.title_font_size, self.title_color)
+        self.changed.emit()
+
+    def _apply_body_font(self):
+        font = QFont()
+        font.setFamilies(theme.FONTS.get(self.font_key, theme.FONTS["楷体"]))
+        font.setPixelSize(self.font_size)
+        self.body.setFont(font)
+        self.body.document().setDefaultFont(font)
+        self.body.viewport().update()
+
+    def _apply_text_palette(self):
+        pal = self.body.palette()
+        pal.setColor(QPalette.ColorRole.Text, QColor(self.font_color))
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(120, 108, 92, 120))
+        pal.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
+        self.body.setPalette(pal)
+        self.body.viewport().setPalette(pal)
+        self.body.viewport().update()
+
     def apply_font(self, key):
         self.font_key = key
-        font = QFont()
-        font.setFamilies(theme.FONTS.get(key, theme.FONTS["楷体"]))
-        font.setPixelSize(theme.FONT_SIZE)
-        self.body.document().setDefaultFont(font)
-        self.body.update()
+        self._apply_body_font()
         self.changed.emit()
+
+    def apply_font_size(self, size):
+        size = _as_int(size, theme.FONT_SIZE, 10, 36)
+        if self.body.format_selection_size(size):
+            self.changed.emit()
+            return True
+        self.font_size = size
+        self._apply_body_font()
+        self.changed.emit()
+        return False
+
+    def apply_font_color(self, color):
+        parsed = QColor(color) if isinstance(color, str) else QColor()
+        if not parsed.isValid():
+            return False
+        name = parsed.name()
+        if self.body.format_selection_color(name):
+            self.changed.emit()
+            return True
+        self.font_color = name
+        self._apply_text_palette()
+        self.changed.emit()
+        return False
 
     def apply_size(self, w, h):
         if self.collapsed:
@@ -717,6 +977,10 @@ class NoteWindow(QWidget):
     def show_menu(self, global_pos):
         self.select()
         menu = QMenu(self)
+
+        act_title = menu.addAction("修改标题")
+        act_title.triggered.connect(lambda: QTimer.singleShot(0, self.title.start_title_edit))
+        menu.addSeparator()
 
         layer = menu.addMenu("层级")
         act_top = layer.addAction("置顶（浮在其他窗口上）")
@@ -770,10 +1034,16 @@ class NoteWindow(QWidget):
             paper=self.paper,
             tape=self.tape,
             font=self.font_key,
+            font_size=self.font_size,
+            font_color=self.font_color,
+            title=self.title_text,
+            title_font_size=self.title_font_size,
+            title_color=self.title_color,
             pinned=self.pinned,
             collapsed=self.collapsed,
             opacity=round(self.opacity, 2),
             text=self.body.toPlainText(),
+            text_html=self.body.toHtml(),
         )
 
     def resizeEvent(self, event):

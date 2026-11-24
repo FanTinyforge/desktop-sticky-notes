@@ -14,6 +14,7 @@ taskkill /IM "桌面便利贴.exe" /F >nul 2>&1
 rmdir /S /Q "%APPDATA%\StickyNotesTool" 2>nul
 del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\桌面便利贴.lnk" 2>nul
 del "%USERPROFILE%\Desktop\桌面便利贴.lnk" 2>nul
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "StickyNotesTool" /f >nul 2>&1
 
 echo.
 echo   已清理便签数据和开机启动项。

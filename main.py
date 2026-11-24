@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import traceback
+import winreg
 from ctypes import wintypes
 from logging.handlers import RotatingFileHandler
 
@@ -33,6 +34,52 @@ _GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 _GetClassNameW.restype = ctypes.c_int
 
 DESKTOP_CLASSES = ("Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32")
+
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_NAME = "StickyNotesTool"
+
+
+def autostart_supported():
+    """打包版才写开机项；源码模式不碰用户注册表，方便调试。"""
+    return bool(getattr(sys, "frozen", False)) and not os.environ.get(
+        "STICKY_NO_AUTOSTART"
+    )
+
+
+def autostart_command():
+    """当前可执行文件的启动命令；exe 路径统一加引号，避免空格路径被拆开。"""
+    if getattr(sys, "frozen", False):
+        return '"%s"' % os.path.abspath(sys.executable)
+    script = os.path.abspath(sys.argv[0])
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    exe = pythonw if os.path.exists(pythonw) else sys.executable
+    return '"%s" "%s"' % (os.path.abspath(exe), script)
+
+
+def set_autostart(enabled):
+    """写 HKCU 的 Run 项，不需要管理员权限。返回是否成功。"""
+    if not autostart_supported():
+        return False
+    try:
+        key = winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
+        )
+        try:
+            if enabled:
+                winreg.SetValueEx(
+                    key, AUTOSTART_NAME, 0, winreg.REG_SZ, autostart_command()
+                )
+            else:
+                try:
+                    winreg.DeleteValue(key, AUTOSTART_NAME)
+                except FileNotFoundError:
+                    pass
+        finally:
+            winreg.CloseKey(key)
+        return True
+    except Exception:
+        logging.exception("设置开机自启失败（enabled=%s）", enabled)
+        return False
 
 
 def install_crash_handler():
@@ -89,6 +136,7 @@ class Manager:
     def __init__(self, app):
         self.app = app
         self.sounds = SoundPlayer(enabled=bool(QSettings().value("sound", True, type=bool)))
+        self.autostart = bool(QSettings().value("autostart", True, type=bool))
         self.notes = []
         self.selected = None
         self._save_error_shown = False
@@ -101,6 +149,7 @@ class Manager:
         self.panel = ControlPanel(self)
         # 托盘先建好：加载存档发现问题时要能立刻告诉用户
         self._build_tray()
+        self._apply_autostart(self.autostart, quiet=True)
         self._wire_screens()
         self._load_notes()
 
@@ -231,6 +280,10 @@ class Manager:
                 paper=self.selected.paper,
                 tape=self.selected.tape,
                 font=self.selected.font_key,
+                font_size=self.selected.font_size,
+                font_color=self.selected.font_color,
+                title_font_size=self.selected.title_font_size,
+                title_color=self.selected.title_color,
                 w=max(150, self.selected.width() - theme.MARGIN * 2),
                 h=max(120, self.selected.height() - theme.MARGIN * 2),
             )
@@ -412,6 +465,14 @@ class Manager:
         menu.aboutToShow.connect(self._sync_tray_menu)
         menu.addSeparator()
 
+        self.act_autostart = menu.addAction("开机自启")
+        self.act_autostart.setCheckable(True)
+        self.act_autostart.setChecked(self.autostart)
+        self.act_autostart.setEnabled(autostart_supported())
+        self.act_autostart.setToolTip("打包版默认开启；可在托盘随时关闭")
+        self.act_autostart.triggered.connect(self.toggle_autostart)
+        menu.addSeparator()
+
         self.act_panel = menu.addAction("显示控制条")
         self.act_panel.setCheckable(True)
         self.act_panel.setChecked(True)
@@ -429,6 +490,34 @@ class Manager:
 
     def _sync_tray_menu(self):
         self.act_sound.setChecked(self.sounds.enabled)
+        self.act_autostart.setChecked(self.autostart)
+
+    def _apply_autostart(self, enabled, quiet=False):
+        enabled = bool(enabled)
+        if not autostart_supported():
+            if not quiet:
+                self._notify(
+                    "开机自启",
+                    "源码模式不写开机项；打包成 exe 后默认开启。",
+                    warning=True,
+                )
+            return False
+        if not set_autostart(enabled):
+            if not quiet:
+                self._notify(
+                    "开机自启设置失败",
+                    "没能写入当前用户的开机启动项，请检查注册表权限。",
+                    warning=True,
+                )
+            return False
+        self.autostart = enabled
+        QSettings().setValue("autostart", enabled)
+        self.act_autostart.setChecked(enabled)
+        return True
+
+    def toggle_autostart(self, on):
+        if not self._apply_autostart(on):
+            self.act_autostart.setChecked(self.autostart)
 
     def toggle_sound(self, on):
         on = bool(on)
@@ -514,7 +603,7 @@ def main():
     )
     app = QApplication(sys.argv)
     app.setApplicationName("桌面便利贴")
-    app.setApplicationVersion("1.1.1")
+    app.setApplicationVersion("1.1.3")
     app.setOrganizationName("StickyNotesTool")
     app.setQuitOnLastWindowClosed(False)
 
