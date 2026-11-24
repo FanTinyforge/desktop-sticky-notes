@@ -8,7 +8,7 @@ A lightweight Windows sticky-note app built with PySide6. Cream-colored paper, a
 
 ## 下载 / Download
 
-去 [Releases](../../releases/latest) 下载 `桌面便利贴-1.1.1-win64.zip`，解压后双击 `桌面便利贴.exe`，免安装。
+去 [Releases](../../releases/latest) 下载 `desktop-sticky-notes-1.1.1-win64.zip`，解压后双击 `桌面便利贴.exe`，免安装。
 
 - 仅支持 **Windows 10 1809+ / Windows 11，x64**
 - 未做代码签名，首次运行 Windows SmartScreen 会提示：点「更多信息 → 仍要运行」
